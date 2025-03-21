@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-
+import binascii
 import os
 import time
 from datetime import datetime as dt
@@ -37,20 +37,25 @@ class miScale(btle.DefaultDelegate):
             for (adType, desc, value) in dev.getScanData():
                 if adType == 22:
                     data = bytes.fromhex(value[4:])
-                    ctrlByte1 = data[1]
-                    hasImpedance = ctrlByte1 & (1<<1)
-                    if hasImpedance:
-
+                    ctrlByte1 = data[0]
+                    isLbs = ctrlByte1 & (1 << 0)
+                    isKg = ctrlByte1 & (1 << 1)
+                    isKg2 = ctrlByte1 & (1 << 2)
+                    isKg3 = ctrlByte1 & (1 << 3)
+                    isStabilized = ctrlByte1 & (1 << 5)
+                    isWeightRemoved = ctrlByte1 & (1 << 7)
+                    if isStabilized and isWeightRemoved:
                         # lbs to kg unit conversion
-                        if value[4:6] == '03':
-                            lb_weight = int((value[28:30] + value[26:28]), 16) * 0.01
+                        if ctrlByte1 & (1 << 0):
+                            lb_weight = (((data[1] & 0xFF) << 8) | (data[2] & 0xFF)) * 0.005
                             weight = round(lb_weight / 2.2046, 1)
                         else:
-                            weight = (((data[12] & 0xFF) << 8) | (data[11] & 0xFF)) * 0.005
-                        impedance = ((data[10] & 0xFF) << 8) | (data[9] & 0xFF)
-                        unix_time = int(dt.timestamp(dt.strptime(f"{int((data[3] << 8) | data[2])},{int(data[4])},{int(data[5])},{int(data[6])},{int(data[7])},{int(data[8])}","%Y,%m,%d,%H,%M,%S")))
+                            weight = int.from_bytes(data[1:3], byteorder="little") / 100 / 2
+
+                        print(binascii.hexlify(data))
+                        unix_time = int(dt.timestamp(dt.strptime(f"{int.from_bytes(data[3:5], byteorder="little")},{int(data[5])},{int(data[6])},{int(data[7])},{int(data[8])},{int(data[9])}","%Y,%m,%d,%H,%M,%S")))
                         print(f"{dt.now().strftime('%d.%m.%Y-%H:%M:%S')} * Reading BLE data complete, finished BLE scan")
-                        print(f"{unix_time};{weight:.1f};{impedance:.0f}")
+                        print(f"{unix_time};{weight:.1f}")
                     else:
                         print(f"{dt.now().strftime('%d.%m.%Y-%H:%M:%S')} * Reading BLE data incomplete, finished BLE scan")
                     exit()
