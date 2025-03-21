@@ -25,7 +25,7 @@ with open(path + '/user/export2garmin.cfg', 'r') as file:
 class miScale(btle.DefaultDelegate):
     def __init__(self):
         btle.DefaultDelegate.__init__(self)
-        self.address = ble_miscale_mac.lower()
+        self.address = ble_miscale_basic_mac.lower()
         self.unique_dev_addresses = []
         self.ble_adapter_time = int(ble_adapter_time)
         self.ble_adapter_repeat = int(ble_adapter_repeat)
@@ -46,11 +46,14 @@ class miScale(btle.DefaultDelegate):
                     isWeightRemoved = ctrlByte1 & (1 << 7)
                     if isStabilized and isWeightRemoved:
                         # lbs to kg unit conversion
-                        if ctrlByte1 & (1 << 0):
-                            lb_weight = (((data[1] & 0xFF) << 8) | (data[2] & 0xFF)) * 0.005
+                        if isLbs:
+                            lb_weight = int.from_bytes(data[1:3], byteorder="little")* 0.005
                             weight = round(lb_weight / 2.2046, 1)
-                        else:
+                        elif isKg:
                             weight = int.from_bytes(data[1:3], byteorder="little") / 100 / 2
+                        else:
+                            print("Unsupported weight unit")
+                            exit()
 
                         print(binascii.hexlify(data))
                         unix_time = int(dt.timestamp(dt.strptime(f"{int.from_bytes(data[3:5], byteorder="little")},{int(data[5])},{int(data[6])},{int(data[7])},{int(data[8])},{int(data[9])}","%Y,%m,%d,%H,%M,%S")))

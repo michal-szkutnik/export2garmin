@@ -46,10 +46,11 @@ while [[ $loop_count -eq 0 ]] || [[ $i -lt $loop_count ]] ; do
 	echo "$(timenow) SYSTEM * Path to user files: $path/user/"
 
 	# Verifying correct working of BLE, restart bluetooth service and device via miscale_ble.py
-	if [[ $switch_miscale == "on" && $switch_mqtt == "off" ]] || [[ $switch_omron == "on" ]] ; then
+	if [[ (($switch_miscale == "on"  || $switch_miscale_basic == "on") &&  $switch_mqtt == "off" ) || $switch_omron == "on" ]] ; then
 		unset $(compgen -v | grep '^ble_')
 		echo "$(timenow) SYSTEM * BLE adapter is ON in export2garmin.cfg file, check if available"
-		ble_check=$(python3 -B $path/miscale/miscale_ble.py)
+		[[ $switch_miscale_basic == "on" ]] && scale_module_path=$path/miscale_basic/miscale_ble.py || scale_module_path=$path/miscale/miscale_ble.py
+		ble_check=$(python3 -B $scale_module_path)
 		if echo $ble_check | grep -q "failed" ; then
 			echo "$(timenow) SYSTEM * BLE adapter  not working, skip scanning check if temp.log file exists"
 		else ble_status=ok
@@ -60,7 +61,7 @@ while [[ $loop_count -eq 0 ]] || [[ $i -lt $loop_count ]] ; do
     fi
 
 	# Create temp.log file if it exists cleanup after last startup
-	if [[ $switch_miscale == "on" ]] || [[ $switch_omron == "on" ]] ; then
+	if [[ $switch_miscale == "on" || $switch_miscale_basic == "on" || $switch_omron == "on" ]] ; then
 		temp_log=$switch_temp_path/temp.log
 		if [[ ! -f $temp_log ]] ; then
 			echo "$(timenow) SYSTEM * Creating temp.log file, go to modules"
@@ -95,6 +96,7 @@ while [[ $loop_count -eq 0 ]] || [[ $i -lt $loop_count ]] ; do
 			fi
 		elif [[ $ble_status == "ok" ]] ; then
 			echo "$(timenow) MISCALE * Importing data from a BLE adapter"
+			echo "$ble_check"
 			if echo $ble_check | grep -q "incomplete" ; then
 				echo "$(timenow) MISCALE * Reading BLE data incomplete, repeat weighing"
 			else miscale_read=$(echo $ble_check | awk '{sub(/.*BLE scan/, ""); print substr($1,1)}')
@@ -107,7 +109,8 @@ while [[ $loop_count -eq 0 ]] || [[ $i -lt $loop_count ]] ; do
 			source <(grep miscale_time_ $path/user/export2garmin.cfg)
 			miscale_os_unixtime=$(date +%s)
 			miscale_time_zone=$(date +%z | cut -c1-3)
-			miscale_offset_unixtime=$(( $miscale_unixtime + $miscale_time_zone * 3600 + $miscale_time_offset ))
+#			miscale_offset_unixtime=$(( $miscale_unixtime + $miscale_time_zone * 3600 + $miscale_time_offset ))
+			miscale_offset_unixtime=$(( $miscale_unixtime + $miscale_time_offset ))
 			miscale_time_shift=$(( $miscale_os_unixtime - $miscale_offset_unixtime ))
 			miscale_absolute_shift=${miscale_time_shift#-}
 			if (( $miscale_absolute_shift < $miscale_time_unsync )) ; then
@@ -174,6 +177,105 @@ while [[ $loop_count -eq 0 ]] || [[ $i -lt $loop_count ]] ; do
 		fi
 		unset $(compgen -v | grep '^miscale_')
 	else echo "$(timenow) MISCALE * Module is OFF in export2garmin.cfg file"
+	fi
+
+	# Mi Scale 2
+	if [[ $switch_miscale_basic == "on" ]] ; then
+		miscale_backup=$path/user/miscale_basic_backup.csv
+		echo "$(timenow) MISCALE_BASIC * Module is ON in export2garmin.cfg file"
+
+		# Creating $miscale_backup file
+		if [[ ! -f $miscale_backup ]] ; then
+			miscale_header="Data Status;Unix Time;Date [dd.mm.yyyy];Time [hh:mm];Weight [kg];Change [kg];User Email;Upload Date [dd.mm.yyyy];Upload Time [hh:mm];Time Difference [s]"			
+			echo "$(timenow) MISCALE_BASIC * Creating miscale_basic_backup.csv file, checking for new data"
+			echo $miscale_header > $miscale_backup
+		else echo "$(timenow) MISCALE_BASIC * miscale_basic_backup.csv file exists, checking for new data"
+		fi
+
+		# Importing raw data from BLE source
+		if [[ $ble_status == "ok" ]] ; then
+			echo "$(timenow) MISCALE_BASIC * Importing data from a BLE adapter"
+			echo $ble_check
+			if echo $ble_check | grep -q "incomplete" ; then
+				echo "$(timenow) MISCALE_BASIC * Reading BLE data incomplete, repeat weighing"
+			else miscale_read=$(echo $ble_check | awk '{sub(/.*BLE scan/, ""); print substr($1,1)}')
+				miscale_unixtime=$(echo $miscale_read | cut -d ";" -f 1)
+			fi
+		fi
+
+		# Check time synchronization between scale and OS
+		if [[ -n $miscale_unixtime ]] ; then
+			source <(grep miscale_time_ $path/user/export2garmin.cfg)
+			miscale_os_unixtime=$(date +%s)
+			miscale_time_zone=$(date +%z | cut -c1-3)
+#			miscale_offset_unixtime=$(( $miscale_unixtime + $miscale_time_zone * 3600 + $miscale_time_offset ))
+			miscale_offset_unixtime=$(( $miscale_unixtime + $miscale_time_offset ))
+			miscale_time_shift=$(( $miscale_os_unixtime - $miscale_offset_unixtime ))
+			miscale_absolute_shift=${miscale_time_shift#-}
+			if (( $miscale_absolute_shift < $miscale_time_unsync )) ; then
+				miscale_found_entry=false
+
+				# Check for duplicates, similar raw data in $miscale_backup file
+				while IFS=";" read -r _ unix_time _ ; do
+					if [[ $unix_time =~ ^[0-9]+$ ]] ; then
+						miscale_time_dif=$(($miscale_offset_unixtime - $unix_time))
+						miscale_time_dif=${miscale_time_dif#-}
+						if (( $miscale_time_dif < $miscale_time_check )) ; then
+							miscale_found_entry=true
+							break
+						fi
+					fi
+				done < $miscale_backup
+
+				# Save raw data to $miscale_backup file
+				if [[ $miscale_found_entry == "false" ]] ; then
+					echo "$(timenow) MISCALE_BASIC * Saving import $miscale_offset_unixtime to miscale_basic_backup.csv file"
+					miscale_offset_row=${miscale_read/${miscale_unixtime}/to_import;${miscale_offset_unixtime}}
+					echo $miscale_offset_row >> $miscale_backup
+				else echo "$(timenow) MISCALE_BASIC * $miscale_time_dif s time difference, same or similar data already exists in miscale_basic_backup.csv file"
+				fi
+			else echo "$(timenow) MISCALE_BASIC * $miscale_time_shift s time difference, synchronize date and time scale"
+				echo "$(timenow) MISCALE_BASIC * Time offset is set to $miscale_offset s"
+			fi
+		fi
+
+		# Calculating data and upload to Garmin Connect, print to temp.log file
+		if grep -q "failed\|to_import" $miscale_backup ; then
+			python3 -B $path/miscale_basic/miscale_export.py > $temp_log 2>&1
+			miscale_import=$(awk -F ": " '/MISCALE_BASIC /*/ Import data:/{print substr($2,1,10)}' $temp_log)
+			echo "$(timenow) MISCALE_BASIC * Calculating data from import $miscale_import, upload to Garmin Connect"
+		fi
+
+		# Handling errors from temp.log file
+		if [[ -z $miscale_import ]] ; then
+			echo "$(timenow) MISCALE_BASIC * There is no new data to upload to Garmin Connect"
+		elif grep -q "MISCALE_BASIC \* There" $temp_log ; then
+			echo "$(timenow) MISCALE_BASIC * There is no user with given weight or undefined user email@email.com, check users section in export2garmin.cfg"
+			echo "$(timenow) MISCALE_BASIC * Deleting import $miscale_import from miscale_basic_backup.csv file"
+			sed -i "/$miscale_import/d" $miscale_backup
+		elif grep -q "Err" $temp_log ; then
+			echo "$(timenow) MISCALE_BASIC * Upload to Garmin Connect has failed, check temp.log for error details"
+			sed -i "s/to_import;$miscale_import/failed;$miscale_import/" $miscale_backup
+		else echo "$(timenow) MISCALE_BASIC * Data upload to Garmin Connect is complete"
+
+			# Save calculated data to $miscale_backup file
+			echo "$(timenow) MISCALE_BASIC * Saving calculated data from import $miscale_import to miscale_basic_backup.csv file"
+			miscale_import_data=$(awk -F ": " '/MISCALE_BASIC /*/ Import data:/{print $2}' $temp_log)
+			miscale_calc_data=$(awk -F ": " '/MISCALE_BASIC /*/ Calculated data:/{print $2}' $temp_log)
+			miscale_import_diff=$(echo $miscale_calc_data | cut -d ";" -f 1-3)
+			miscale_check_line=$(wc -l < $miscale_backup)
+			sed -i "s/failed;$miscale_import_data/uploaded;$miscale_import;$miscale_calc_data;$miscale_time_shift/; s/to_import;$miscale_import_data/uploaded;$miscale_import;$miscale_calc_data;$miscale_time_shift/" $miscale_backup
+			if [[ $miscale_check_line == "2" ]] ; then
+				sed -i "s/$miscale_import;$miscale_import_diff/$miscale_import;$miscale_import_diff;0.0/" $miscale_backup
+			else miscale_email_user=$(echo $miscale_calc_data | cut -d ";" -f 18)
+				miscale_weight_last=$(grep $miscale_email_user $miscale_backup | sed -n 'x;$p' | cut -d ";" -f 5)
+				miscale_weight_import=$(echo $miscale_calc_data | cut -d ";" -f 3)
+				miscale_weight_diff=$(echo $miscale_weight_import - $miscale_weight_last | bc | sed "s/^-\./-0./; s/^\./0./")
+				sed -i "s/$miscale_import;$miscale_import_diff/$miscale_import;$miscale_import_diff;$miscale_weight_diff/; s/;0;/;0.0;/" $miscale_backup
+			fi
+		fi
+		unset $(compgen -v | grep '^miscale_basic_')
+	else echo "$(timenow) MISCALE_BASIC * Module is OFF in export2garmin.cfg file"
 	fi
 
 	# Omron blood pressure
